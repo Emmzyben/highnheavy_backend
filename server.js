@@ -30,8 +30,10 @@ app.get('/health', (req, res) => {
 // Import routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
-// app.use('/api/bookings', require('./routes/bookings'));
-// app.use('/api/quotes', require('./routes/quotes'));
+app.use('/api/bookings', require('./routes/bookings'));
+app.use('/api/drivers', require('./routes/drivers'));
+app.use('/api/quotes', require('./routes/quotes'));
+app.use('/api/vehicles', require('./routes/vehicles'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
