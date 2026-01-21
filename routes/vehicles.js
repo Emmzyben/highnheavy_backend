@@ -106,4 +106,21 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     }
 });
 
+// @route   GET /api/vehicles/provider/:providerId
+// @desc    Get all vehicles for a specific provider
+// @access  Private (Admin or Shipper)
+router.get('/provider/:providerId', authMiddleware, async (req, res) => {
+    try {
+        const { providerId } = req.params;
+        const [vehicles] = await pool.query(
+            'SELECT * FROM vehicles WHERE owner_id = ? ORDER BY created_at DESC',
+            [providerId]
+        );
+        res.json({ success: true, data: vehicles });
+    } catch (error) {
+        console.error('Fetch provider vehicles error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
 module.exports = router;

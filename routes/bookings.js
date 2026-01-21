@@ -3,6 +3,7 @@ const router = express.Router();
 const { pool } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
+const { createNotification } = require('./notifications');
 
 // @route   POST /api/bookings
 // @desc    Create a new booking
@@ -83,6 +84,19 @@ router.post('/', authMiddleware, async (req, res) => {
 
         await pool.query(query, params);
 
+        // Notify all admins about new booking
+        const [admins] = await pool.query('SELECT id FROM users WHERE role = "admin"');
+        for (const admin of admins) {
+            await createNotification({
+                userId: admin.id,
+                type: 'booking',
+                title: 'New Booking Request',
+                message: `New ${cargoType} booking from ${pickupCity}, ${pickupState} to ${deliveryCity}, ${deliveryState}`,
+                link: '/dashboard/admin?section=bookings',
+                metadata: { bookingId: id }
+            });
+        }
+
         res.status(201).json({
             success: true,
             message: 'Booking request submitted successfully',
@@ -110,8 +124,24 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
         let params = [];
 
         if (userRole === 'shipper') {
-            query += 'shipper_id = ?';
-            params.push(userId);
+            query = `
+                SELECT b.*, 
+                       cu.full_name as carrier_name, 
+                       cp.company_name as carrier_company,
+                       eu.full_name as escort_name, 
+                       ep.company_name as escort_company,
+                       r.id as review_id,
+                       r.rating as review_rating,
+                       r.comment as review_comment
+                FROM bookings b
+                LEFT JOIN users cu ON b.carrier_id = cu.id
+                LEFT JOIN profiles cp ON b.carrier_id = cp.user_id
+                LEFT JOIN users eu ON b.escort_id = eu.id
+                LEFT JOIN profiles ep ON b.escort_id = ep.user_id
+                LEFT JOIN reviews r ON b.id = r.booking_id AND r.reviewer_id = ?
+                WHERE b.shipper_id = ?
+            `;
+            params.push(userId, userId);
         } else if (userRole === 'carrier') {
             query += 'carrier_id = ?';
             params.push(userId);
@@ -122,7 +152,14 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
             query += 'assigned_driver_id = ?';
             params.push(userId);
         } else if (userRole === 'admin') {
-            query = 'SELECT * FROM bookings';
+            query = `
+                SELECT b.*, 
+                       u.full_name as shipper_name, 
+                       p.company_name as shipper_company
+                FROM bookings b
+                LEFT JOIN users u ON b.shipper_id = u.id
+                LEFT JOIN profiles p ON b.shipper_id = p.user_id
+            `;
             params = [];
         } else {
             return res.status(403).json({ success: false, message: 'Unauthorized role' });
@@ -229,6 +266,46 @@ router.put('/:id', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('Booking update error:', error);
         res.status(500).json({ success: false, message: 'Server error updating booking' });
+    }
+});
+
+// @route   PATCH /api/bookings/:id/status
+// @desc    Update booking status
+// @access  Private
+router.patch('/:id/status', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        const userId = req.user.id;
+        const userRole = req.user.role;
+
+        const allowedStatuses = ['in_transit', 'delivered', 'completed', 'cancelled', 'booked'];
+        if (!allowedStatuses.includes(status)) {
+            return res.status(400).json({ success: false, message: 'Invalid status' });
+        }
+
+        // Check if user is authorized to update this booking
+        const [booking] = await pool.query('SELECT * FROM bookings WHERE id = ?', [id]);
+        if (booking.length === 0) {
+            return res.status(404).json({ success: false, message: 'Booking not found' });
+        }
+
+        const b = booking[0];
+        const isAdmin = userRole === 'admin';
+        const isCarrier = userRole === 'carrier' && b.carrier_id === userId;
+        const isEscort = userRole === 'escort' && b.escort_id === userId;
+        const isDriver = userRole === 'driver' && b.assigned_driver_id === userId;
+
+        if (!isAdmin && !isCarrier && !isEscort && !isDriver) {
+            return res.status(403).json({ success: false, message: 'Unauthorized to update this booking' });
+        }
+
+        await pool.query('UPDATE bookings SET status = ? WHERE id = ?', [status, id]);
+
+        res.json({ success: true, message: `Booking status updated to ${status}` });
+    } catch (error) {
+        console.error('Update booking status error:', error);
+        res.status(500).json({ success: false, message: 'Server error updating booking status' });
     }
 });
 

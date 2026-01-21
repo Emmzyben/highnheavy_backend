@@ -12,13 +12,18 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+});
 
 // Routes
 app.get('/', (req, res) => {
     res.json({
         message: 'HighnHeavy API Server',
         version: '1.0.0',
-        status: 'running'
+        status: 'running',
+        diagnostic: 'REV_2026_01_16_V1'
     });
 });
 
@@ -34,6 +39,10 @@ app.use('/api/bookings', require('./routes/bookings'));
 app.use('/api/drivers', require('./routes/drivers'));
 app.use('/api/quotes', require('./routes/quotes'));
 app.use('/api/vehicles', require('./routes/vehicles'));
+app.use('/api/messages', require('./routes/messages'));
+app.use('/api/admin', require('./routes/admin'));
+app.use('/api/reviews', require('./routes/reviews'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

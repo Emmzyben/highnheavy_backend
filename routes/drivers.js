@@ -180,4 +180,21 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     }
 });
 
+// @route   GET /api/drivers/provider/:providerId
+// @desc    Get all drivers for a specific carrier
+// @access  Private (Admin or Shipper)
+router.get('/provider/:providerId', authMiddleware, async (req, res) => {
+    try {
+        const { providerId } = req.params;
+        const [drivers] = await pool.query(
+            'SELECT * FROM drivers WHERE employer_id = ? ORDER BY name ASC',
+            [providerId]
+        );
+        res.json({ success: true, data: drivers });
+    } catch (error) {
+        console.error('Fetch provider drivers error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
 module.exports = router;
