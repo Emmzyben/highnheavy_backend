@@ -90,8 +90,10 @@ router.get('/conversations', authMiddleware, async (req, res) => {
         const [conversations] = await pool.query(`
             SELECT 
                 c.id, c.booking_id, c.updated_at,
+                u.id as other_user_id,
                 u.full_name as other_user_name,
                 u.role as other_user_role,
+                u.avatar_url as other_user_avatar,
                 p.company_name as other_user_company,
                 b.cargo_type,
                 (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message,

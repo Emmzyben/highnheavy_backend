@@ -109,7 +109,7 @@ router.post('/login', async (req, res) => {
 
         // Check if user exists
         const [users] = await pool.query(
-            'SELECT id, email, password_hash, full_name, role, status, profile_completed, email_verified FROM users WHERE email = ?',
+            'SELECT id, email, password_hash, full_name, role, status, profile_completed, email_verified, avatar_url FROM users WHERE email = ?',
             [email]
         );
 
@@ -153,7 +153,10 @@ router.post('/login', async (req, res) => {
                     role: user.role,
                     status: user.status,
                     profile_completed,
-                    email_verified: user.email_verified === 1 || user.email_verified === true
+                    email_verified: user.email_verified === 1 || user.email_verified === true,
+                    email_notifications: user.email_notifications === 1 || user.email_notifications === true,
+                    push_notifications: user.push_notifications === 1 || user.push_notifications === true,
+                    avatar_url: user.avatar_url
                 }
             }
         });

@@ -27,7 +27,7 @@ router.get('/', authMiddleware, async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
     try {
         const ownerId = req.user.id;
-        const { type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection } = req.body;
+        const { type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection, photos } = req.body;
 
         if (!type || !name) {
             return res.status(400).json({ success: false, message: 'Type and Name are required' });
@@ -36,9 +36,22 @@ router.post('/', authMiddleware, async (req, res) => {
         const id = uuidv4();
         await pool.query(
             `INSERT INTO vehicles 
-            (id, owner_id, type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, ownerId, type, name, plate_number, vin, year, capacity, dimensions, status || 'available', last_inspection || null]
+            (id, owner_id, type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection, photos) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                id,
+                ownerId,
+                type,
+                name,
+                plate_number,
+                vin,
+                year,
+                capacity,
+                dimensions,
+                status || 'available',
+                last_inspection || null,
+                JSON.stringify(photos || [])
+            ]
         );
 
         res.status(201).json({ success: true, message: 'Vehicle added successfully', data: { id } });
@@ -55,7 +68,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
     try {
         const ownerId = req.user.id;
         const { id } = req.params;
-        const { type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection } = req.body;
+        const { type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection, photos } = req.body;
 
         // Verify ownership
         const [existing] = await pool.query('SELECT owner_id FROM vehicles WHERE id = ?', [id]);
@@ -68,9 +81,21 @@ router.put('/:id', authMiddleware, async (req, res) => {
 
         await pool.query(
             `UPDATE vehicles 
-             SET type = ?, name = ?, plate_number = ?, vin = ?, year = ?, capacity = ?, dimensions = ?, status = ?, last_inspection = ?
+             SET type = ?, name = ?, plate_number = ?, vin = ?, year = ?, capacity = ?, dimensions = ?, status = ?, last_inspection = ?, photos = ?
              WHERE id = ?`,
-            [type, name, plate_number, vin, year, capacity, dimensions, status, last_inspection, id]
+            [
+                type,
+                name,
+                plate_number,
+                vin,
+                year,
+                capacity,
+                dimensions,
+                status,
+                last_inspection,
+                JSON.stringify(photos || []),
+                id
+            ]
         );
 
         res.json({ success: true, message: 'Vehicle updated successfully' });
@@ -97,9 +122,25 @@ router.delete('/:id', authMiddleware, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Unauthorized to delete this vehicle' });
         }
 
-        await pool.query('DELETE FROM vehicles WHERE id = ?', [id]);
+        // Start transaction
+        const connection = await pool.getConnection();
+        await connection.beginTransaction();
 
-        res.json({ success: true, message: 'Vehicle deleted successfully' });
+        try {
+            // Nullify references in quotes table before deleting
+            await connection.query('UPDATE quotes SET vehicle_id = NULL WHERE vehicle_id = ?', [id]);
+
+            // Delete vehicle
+            await connection.query('DELETE FROM vehicles WHERE id = ?', [id]);
+
+            await connection.commit();
+            res.json({ success: true, message: 'Vehicle deleted successfully' });
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
     } catch (error) {
         console.error('Delete vehicle error:', error);
         res.status(500).json({ success: false, message: 'Server error deleting vehicle' });

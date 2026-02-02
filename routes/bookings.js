@@ -130,6 +130,7 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
                        cp.company_name as carrier_company,
                        eu.full_name as escort_name, 
                        ep.company_name as escort_company,
+                       d.name as driver_name,
                        r.id as review_id,
                        r.rating as review_rating,
                        r.comment as review_comment
@@ -138,6 +139,7 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
                 LEFT JOIN profiles cp ON b.carrier_id = cp.user_id
                 LEFT JOIN users eu ON b.escort_id = eu.id
                 LEFT JOIN profiles ep ON b.escort_id = ep.user_id
+                LEFT JOIN drivers d ON b.assigned_driver_id = d.id
                 LEFT JOIN reviews r ON b.id = r.booking_id AND r.reviewer_id = ?
                 WHERE b.shipper_id = ?
             `;
@@ -149,8 +151,12 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
             query += 'escort_id = ?';
             params.push(userId);
         } else if (userRole === 'driver') {
+            const [driverRecord] = await pool.query('SELECT id FROM drivers WHERE user_id = ?', [userId]);
+            if (driverRecord.length === 0) {
+                return res.json({ success: true, data: [] });
+            }
             query += 'assigned_driver_id = ?';
-            params.push(userId);
+            params.push(driverRecord[0].id);
         } else if (userRole === 'admin') {
             query = `
                 SELECT b.*, 
@@ -294,7 +300,15 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
         const isAdmin = userRole === 'admin';
         const isCarrier = userRole === 'carrier' && b.carrier_id === userId;
         const isEscort = userRole === 'escort' && b.escort_id === userId;
-        const isDriver = userRole === 'driver' && b.assigned_driver_id === userId;
+
+        // Fix Driver check: compare driver.id (not user.id) with booking.assigned_driver_id
+        let isDriver = false;
+        if (userRole === 'driver') {
+            const [driverRecord] = await pool.query('SELECT id FROM drivers WHERE user_id = ?', [userId]);
+            if (driverRecord.length > 0 && b.assigned_driver_id === driverRecord[0].id) {
+                isDriver = true;
+            }
+        }
 
         if (!isAdmin && !isCarrier && !isEscort && !isDriver) {
             return res.status(403).json({ success: false, message: 'Unauthorized to update this booking' });
