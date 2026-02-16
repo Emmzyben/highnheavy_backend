@@ -110,26 +110,36 @@ router.post('/assign-providers', authMiddleware, async (req, res) => {
         if (cQuote.length === 0) throw new Error('Carrier quote not found');
         const carrierQuote = cQuote[0];
 
-        // 2. Start building update query for booking
-        let updateQuery = 'UPDATE bookings SET carrier_id = ?, assigned_driver_id = ?, agreed_price = ?, status = "booked"';
-        let updateParams = [carrierQuote.provider_id, carrierQuote.driver_id, carrierQuote.amount];
+        // 2. Handle escort if provided and calculate total price
+        let totalAgreedPrice = parseFloat(carrierQuote.amount);
+        let escortProviderId = null;
+        let escortQuoteAmount = 0;
 
-        // 3. Handle escort if provided
         if (escort_quote_id) {
             const [eQuote] = await connection.query('SELECT * FROM quotes WHERE id = ?', [escort_quote_id]);
             if (eQuote.length > 0) {
-                updateQuery += ', escort_id = ?';
-                updateParams.push(eQuote[0].provider_id);
+                const escortQuote = eQuote[0];
+                escortProviderId = escortQuote.provider_id;
+                escortQuoteAmount = parseFloat(escortQuote.amount);
+                totalAgreedPrice += escortQuoteAmount;
 
                 // Mark escort quote as accepted
                 await connection.query('UPDATE quotes SET status = "accepted" WHERE id = ?', [escort_quote_id]);
             }
         }
 
+        // 3. Update booking
+        let updateQuery = 'UPDATE bookings SET carrier_id = ?, assigned_driver_id = ?, agreed_price = ?, status = "awaiting_payment"';
+        let updateParams = [carrierQuote.provider_id, carrierQuote.driver_id, totalAgreedPrice];
+
+        if (escortProviderId) {
+            updateQuery += ', escort_id = ?';
+            updateParams.push(escortProviderId);
+        }
+
         updateQuery += ' WHERE id = ?';
         updateParams.push(booking_id);
 
-        // 4. Update booking
         await connection.query(updateQuery, updateParams);
 
         // 5. Mark carrier quote as accepted
@@ -176,9 +186,9 @@ router.post('/assign-providers', authMiddleware, async (req, res) => {
         await createNotification({
             userId: booking.shipper_id,
             type: 'booking_update',
-            title: 'Booking Confirmed',
-            message: `Your ${booking.cargo_type} booking has been confirmed with carrier and assigned`,
-            link: '/dashboard/shipper?section=bookings',
+            title: 'Providers Assigned - Payment Required',
+            message: `Your ${booking.cargo_type} booking has been matched. Please proceed to payment to confirm.`,
+            link: '/dashboard/shipper?section=payments',
             metadata: { bookingId: booking_id }
         });
 

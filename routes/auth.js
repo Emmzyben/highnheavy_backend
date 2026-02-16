@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+require('dotenv').config();
 const { pool } = require('../config/database');
 const {
     generateVerificationToken,
@@ -18,6 +19,7 @@ router.post('/register', async (req, res) => {
 
         // Validation
         if (!email || !password || !full_name || !role) {
+            console.log('DEBUG: Missing fields in registration:', { email: !!email, password: !!password, full_name: !!full_name, role: !!role });
             return res.status(400).json({
                 success: false,
                 message: 'Please provide all required fields'
@@ -135,10 +137,19 @@ router.post('/login', async (req, res) => {
         const profile_completed = user.profile_completed === 1;
 
         // Create JWT token
+        console.log('DEBUG: CWD:', process.cwd());
+        console.log('DEBUG: JWT_SECRET in auth route:', process.env.JWT_SECRET);
+
+        if (!process.env.JWT_SECRET) {
+            console.error('CRITICAL: JWT_SECRET is missing!');
+            // Fallback for debugging - DO NOT LEAVE IN PRODUCTION
+            // process.env.JWT_SECRET = 'mysecretbeautifuluglykey';
+        }
+
         const token = jwt.sign(
             { id: user.id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRE }
+            { expiresIn: process.env.JWT_EXPIRE || '30d' }
         );
 
         res.json({

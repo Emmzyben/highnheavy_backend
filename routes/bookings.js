@@ -33,6 +33,12 @@ router.post('/', authMiddleware, async (req, res) => {
 
         // Basic validation
         if (!pickupAddress || !pickupCity || !pickupState || !deliveryAddress || !deliveryCity || !deliveryState || !cargoType || !cargoDescription || !length || !width || !height || !weight || !shipmentDate) {
+            console.log('DEBUG: Missing fields in booking:', {
+                pickupAddress: !!pickupAddress, pickupCity: !!pickupCity, pickupState: !!pickupState,
+                deliveryAddress: !!deliveryAddress, deliveryCity: !!deliveryCity, deliveryState: !!deliveryState,
+                cargoType: !!cargoType, cargoDescription: !!cargoDescription,
+                length: !!length, width: !!width, height: !!height, weight: !!weight, shipmentDate: !!shipmentDate
+            });
             return res.status(400).json({ success: false, message: 'Please provide all required fields' });
         }
 
@@ -182,6 +188,82 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
     }
 });
 
+// @route   GET /api/bookings/:id
+// @desc    Get a single booking by ID
+// @access  Private
+router.get('/:id', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+        const userRole = req.user.role;
+
+        // Base query to get booking details with shipper info
+        let query = `
+            SELECT b.*, 
+                   u.full_name as shipper_name, 
+                   p.company_name as shipper_company,
+                   u_c.full_name as carrier_name,
+                   u_e.full_name as escort_name
+            FROM bookings b
+            JOIN users u ON b.shipper_id = u.id
+            LEFT JOIN profiles p ON b.shipper_id = p.user_id
+            LEFT JOIN users u_c ON b.carrier_id = u_c.id
+            LEFT JOIN users u_e ON b.escort_id = u_e.id
+            WHERE b.id = ?
+        `;
+
+        const [results] = await pool.query(query, [id]);
+
+        if (results.length === 0) {
+            return res.status(404).json({ success: false, message: 'Booking not found' });
+        }
+
+        const booking = results[0];
+
+        // Access Control Logic
+        let hasAccess = false;
+
+        if (userRole === 'admin') {
+            hasAccess = true;
+        } else if (userRole === 'shipper' && booking.shipper_id === userId) {
+            hasAccess = true;
+        } else if (userRole === 'carrier') {
+            // Carriers can see bookings they are assigned to OR bookings that are available for quoting
+            if (booking.carrier_id === userId) {
+                hasAccess = true;
+            } else if (booking.carrier_id === null && ['pending_quote', 'quoted'].includes(booking.status)) {
+                hasAccess = true;
+            }
+            // Also allow if they have submitted a quote (even if it's not 'available' anymore)
+            const [quote] = await pool.query('SELECT id FROM quotes WHERE booking_id = ? AND provider_id = ?', [id, userId]);
+            if (quote.length > 0) hasAccess = true;
+        } else if (userRole === 'escort') {
+            // Escorts can see bookings they are assigned to OR bookings that need escort and are available
+            if (booking.escort_id === userId) {
+                hasAccess = true;
+            } else if (booking.requires_escort === 1 && booking.escort_id === null) {
+                hasAccess = true;
+            }
+            const [quote] = await pool.query('SELECT id FROM quotes WHERE booking_id = ? AND provider_id = ?', [id, userId]);
+            if (quote.length > 0) hasAccess = true;
+        } else if (userRole === 'driver') {
+            const [driverRecord] = await pool.query('SELECT id FROM drivers WHERE user_id = ?', [userId]);
+            if (driverRecord.length > 0 && booking.assigned_driver_id === driverRecord[0].id) {
+                hasAccess = true;
+            }
+        }
+
+        if (!hasAccess) {
+            return res.status(403).json({ success: false, message: 'Unauthorized to view this booking' });
+        }
+
+        res.json({ success: true, data: booking });
+    } catch (error) {
+        console.error('Fetch single booking error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching booking' });
+    }
+});
+
 // @route   DELETE /api/bookings/:id
 // @desc    Delete a booking (if no quotes exist)
 // @access  Private
@@ -285,7 +367,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
         const userId = req.user.id;
         const userRole = req.user.role;
 
-        const allowedStatuses = ['in_transit', 'delivered', 'completed', 'cancelled', 'booked'];
+        const allowedStatuses = ['awaiting_payment', 'in_transit', 'delivered', 'completed', 'cancelled', 'booked'];
         if (!allowedStatuses.includes(status)) {
             return res.status(400).json({ success: false, message: 'Invalid status' });
         }
@@ -300,6 +382,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
         const isAdmin = userRole === 'admin';
         const isCarrier = userRole === 'carrier' && b.carrier_id === userId;
         const isEscort = userRole === 'escort' && b.escort_id === userId;
+        const isShipper = userRole === 'shipper' && b.shipper_id === userId;
 
         // Fix Driver check: compare driver.id (not user.id) with booking.assigned_driver_id
         let isDriver = false;
@@ -310,13 +393,79 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
             }
         }
 
-        if (!isAdmin && !isCarrier && !isEscort && !isDriver) {
+        if (!isAdmin && !isCarrier && !isEscort && !isDriver && !isShipper) {
             return res.status(403).json({ success: false, message: 'Unauthorized to update this booking' });
         }
 
-        await pool.query('UPDATE bookings SET status = ? WHERE id = ?', [status, id]);
+        // Enforce status transition rules
+        if (isShipper && !isAdmin) {
+            if (status !== 'completed') {
+                return res.status(400).json({ success: false, message: 'Shippers can only mark bookings as completed' });
+            }
+            if (b.status !== 'delivered') {
+                return res.status(400).json({ success: false, message: 'Booking must be delivered before it can be marked as completed' });
+            }
+        }
 
-        res.json({ success: true, message: `Booking status updated to ${status}` });
+        if (isDriver && !isAdmin) {
+            const allowedDriverStatuses = ['in_transit', 'delivered'];
+            if (!allowedDriverStatuses.includes(status)) {
+                return res.status(400).json({ success: false, message: 'Drivers can only update status to in_transit or delivered' });
+            }
+        }
+
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+
+            // Update booking status
+            await connection.query('UPDATE bookings SET status = ? WHERE id = ?', [status, id]);
+
+            // If status is completed, release funds
+            if (status === 'completed' && b.status !== 'completed') {
+                // Get payment details to know how much to release
+                const [payments] = await connection.query(
+                    'SELECT carrier_amount, escort_amount FROM payments WHERE booking_id = ? AND status = "completed" LIMIT 1',
+                    [id]
+                );
+
+                if (payments.length > 0) {
+                    const { carrier_amount, escort_amount } = payments[0];
+
+                    // Release Carrier Funds
+                    if (b.carrier_id && carrier_amount > 0) {
+                        await connection.query(
+                            'UPDATE wallets SET balance = balance + ?, pending_balance = pending_balance - ? WHERE user_id = ?',
+                            [carrier_amount, carrier_amount, b.carrier_id]
+                        );
+                        await connection.query(`
+                            INSERT INTO wallet_transactions (wallet_id, amount, type, status, reference_id, description)
+                            VALUES (?, ?, 'booking_completed', 'completed', ?, ?)
+                        `, [b.carrier_id, carrier_amount, id, `Funds released for completed booking ${id}`]);
+                    }
+
+                    // Release Escort Funds
+                    if (b.escort_id && escort_amount > 0) {
+                        await connection.query(
+                            'UPDATE wallets SET balance = balance + ?, pending_balance = pending_balance - ? WHERE user_id = ?',
+                            [escort_amount, escort_amount, b.escort_id]
+                        );
+                        await connection.query(`
+                            INSERT INTO wallet_transactions (wallet_id, amount, type, status, reference_id, description)
+                            VALUES (?, ?, 'booking_completed', 'completed', ?, ?)
+                        `, [b.escort_id, escort_amount, id, `Escort funds released for completed booking ${id}`]);
+                    }
+                }
+            }
+
+            await connection.commit();
+            res.json({ success: true, message: `Booking status updated to ${status}` });
+        } catch (error) {
+            await connection.rollback();
+            throw error;
+        } finally {
+            connection.release();
+        }
     } catch (error) {
         console.error('Update booking status error:', error);
         res.status(500).json({ success: false, message: 'Server error updating booking status' });

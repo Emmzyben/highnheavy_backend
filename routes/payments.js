@@ -1,0 +1,307 @@
+const express = require('express');
+const router = express.Router();
+const { pool } = require('../config/database');
+const { authMiddleware } = require('../middleware/auth');
+const { v4: uuidv4 } = require('uuid');
+const { createNotification } = require('./notifications');
+
+// Platform fee percentage (15%)
+const PLATFORM_FEE_PERCENT = 0.15;
+
+// @route   GET /api/payments/awaiting
+// @desc    Get bookings awaiting payment for shipper
+// @access  Private (Shipper only)
+router.get('/awaiting', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const userRole = req.user.role;
+
+        if (userRole !== 'shipper') {
+            return res.status(403).json({ success: false, message: 'Only shippers can access this endpoint' });
+        }
+
+        const [bookings] = await pool.query(`
+            SELECT b.*, 
+                   cu.full_name as carrier_name, 
+                   cp.company_name as carrier_company,
+                   eu.full_name as escort_name, 
+                   ep.company_name as escort_company
+            FROM bookings b
+            LEFT JOIN users cu ON b.carrier_id = cu.id
+            LEFT JOIN profiles cp ON b.carrier_id = cp.user_id
+            LEFT JOIN users eu ON b.escort_id = eu.id
+            LEFT JOIN profiles ep ON b.escort_id = ep.user_id
+            WHERE b.shipper_id = ? AND b.status = 'awaiting_payment'
+            ORDER BY b.created_at DESC
+        `, [userId]);
+
+        res.json({ success: true, data: bookings });
+    } catch (error) {
+        console.error('Fetch awaiting payments error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching payments' });
+    }
+});
+
+// @route   GET /api/payments/history
+// @desc    Get payment history for shipper
+// @access  Private (Shipper only)
+router.get('/history', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        const [payments] = await pool.query(`
+            SELECT p.*, 
+                   b.cargo_type, 
+                   b.pickup_city, 
+                   b.pickup_state,
+                   b.delivery_city,
+                   b.delivery_state,
+                   b.id as booking_id
+            FROM payments p
+            LEFT JOIN bookings b ON p.booking_id = b.id
+            WHERE p.payer_id = ?
+            ORDER BY p.created_at DESC
+        `, [userId]);
+
+        res.json({ success: true, data: payments });
+    } catch (error) {
+        console.error('Fetch payment history error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching payment history' });
+    }
+});
+
+// @route   POST /api/payments/process
+// @desc    Process payment for a booking
+// @access  Private (Shipper only)
+router.post('/process', authMiddleware, async (req, res) => {
+    const connection = await pool.getConnection();
+    try {
+        const userId = req.user.id;
+        const userRole = req.user.role;
+        const { bookingId, paymentMethod, paymentDetails } = req.body;
+
+        if (userRole !== 'shipper') {
+            return res.status(403).json({ success: false, message: 'Only shippers can make payments' });
+        }
+
+        if (!bookingId || !paymentMethod) {
+            return res.status(400).json({ success: false, message: 'Booking ID and payment method are required' });
+        }
+
+        await connection.beginTransaction();
+
+        // 1. Get booking details
+        const [booking] = await connection.query(
+            'SELECT * FROM bookings WHERE id = ? AND shipper_id = ?',
+            [bookingId, userId]
+        );
+
+        if (booking.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Booking not found or unauthorized' });
+        }
+
+        const b = booking[0];
+
+        if (b.status !== 'awaiting_payment') {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'Booking is not awaiting payment' });
+        }
+
+        if (!b.agreed_price || b.agreed_price <= 0) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'Invalid booking price' });
+        }
+
+        // 2. Fetch accepted quotes to get breakdown
+        const [acceptedQuotes] = await connection.query(`
+            SELECT q.*, u.role 
+            FROM quotes q 
+            JOIN users u ON q.provider_id = u.id 
+            WHERE q.booking_id = ? AND q.status = 'accepted'
+        `, [bookingId]);
+
+        let carrierAmount = 0;
+        let escortAmount = 0;
+        let carrierId = b.carrier_id;
+        let escortId = b.escort_id;
+
+        acceptedQuotes.forEach(q => {
+            if (q.role === 'carrier') carrierAmount = parseFloat(q.amount);
+            if (q.role === 'escort') escortAmount = parseFloat(q.amount);
+        });
+
+        // 3. Calculate payment amounts
+        const bookingAmount = parseFloat(b.agreed_price);
+        const platformFee = bookingAmount * PLATFORM_FEE_PERCENT;
+        const totalAmount = bookingAmount + platformFee;
+
+        // 4. Process payment based on method
+        let paymentStatus = 'pending';
+        let transactionRef = null;
+
+        if (paymentMethod === 'stripe') {
+            paymentStatus = 'completed';
+            transactionRef = 'STRIPE_PLACEHOLDER_' + uuidv4().substring(0, 8);
+        } else if (paymentMethod === 'paypal') {
+            paymentStatus = 'completed';
+            transactionRef = 'PAYPAL_PLACEHOLDER_' + uuidv4().substring(0, 8);
+        } else {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'Invalid payment method' });
+        }
+
+        // 5. Create payment record
+        const paymentId = uuidv4();
+        await connection.query(`
+            INSERT INTO payments (
+                id, booking_id, payer_id, amount, carrier_amount, escort_amount, 
+                platform_fee, total_amount, method, transaction_ref, status, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+            paymentId,
+            bookingId,
+            userId,
+            bookingAmount,
+            carrierAmount,
+            escortAmount,
+            platformFee,
+            totalAmount,
+            paymentMethod,
+            transactionRef,
+            paymentStatus,
+            JSON.stringify(paymentDetails || {})
+        ]);
+
+        // 6. Update booking status and wallets if payment successful
+        if (paymentStatus === 'completed') {
+            await connection.query(
+                'UPDATE bookings SET status = "booked" WHERE id = ?',
+                [bookingId]
+            );
+
+            // Update Carrier Wallet (Pending)
+            if (carrierId && carrierAmount > 0) {
+                await connection.query(
+                    'UPDATE wallets SET pending_balance = pending_balance + ? WHERE user_id = ?',
+                    [carrierAmount, carrierId]
+                );
+                await connection.query(`
+                    INSERT INTO wallet_transactions (wallet_id, amount, type, status, reference_id, description)
+                    VALUES (?, ?, 'booking_pending', 'completed', ?, ?)
+                `, [carrierId, carrierAmount, bookingId, `Pending payment for booking ${bookingId}`]);
+            }
+
+            // Update Escort Wallet (Pending)
+            if (escortId && escortAmount > 0) {
+                await connection.query(
+                    'UPDATE wallets SET pending_balance = pending_balance + ? WHERE user_id = ?',
+                    [escortAmount, escortId]
+                );
+                await connection.query(`
+                    INSERT INTO wallet_transactions (wallet_id, amount, type, status, reference_id, description)
+                    VALUES (?, ?, 'booking_pending', 'completed', ?, ?)
+                `, [escortId, escortAmount, bookingId, `Pending payment for escort service on booking ${bookingId}`]);
+            }
+
+            // Update Admin Wallet / Activity? (Admin tracks platform earnings)
+            // Get Admin User
+            const [adminUser] = await connection.query('SELECT id FROM users WHERE role = "admin" LIMIT 1');
+            if (adminUser.length > 0) {
+                const adminId = adminUser[0].id;
+                // Admin gets platform fee as balance immediately? 
+                // Typically platform fee is earned when service is delivered.
+                // But user says: "admin... has his own balance which is the total of all wallet balance and the system 15%"
+                // Let's add it to admin's balance or track separately.
+                await connection.query(
+                    'UPDATE wallets SET balance = balance + ? WHERE user_id = ?',
+                    [platformFee, adminId]
+                );
+                await connection.query(`
+                    INSERT INTO wallet_transactions (wallet_id, amount, type, status, reference_id, description)
+                    VALUES (?, ?, 'fee', 'completed', ?, ?)
+                `, [adminId, platformFee, bookingId, `Platform fee for booking ${bookingId}`]);
+            }
+
+            // 6. Notify carrier
+            if (b.carrier_id) {
+                await createNotification({
+                    userId: b.carrier_id,
+                    type: 'payment_received',
+                    title: 'Payment Received - Job Confirmed',
+                    message: `Payment confirmed for ${b.cargo_type} shipment. You can now start the job.`,
+                    link: '/dashboard/carrier?section=bookings',
+                    metadata: { bookingId, paymentId }
+                });
+            }
+
+            // 7. Notify escort if applicable
+            if (b.escort_id) {
+                await createNotification({
+                    userId: b.escort_id,
+                    type: 'payment_received',
+                    title: 'Payment Received - Job Confirmed',
+                    message: `Payment confirmed for ${b.cargo_type} escort service. Job is now active.`,
+                    link: '/dashboard/escort?section=available',
+                    metadata: { bookingId, paymentId }
+                });
+            }
+        }
+
+        await connection.commit();
+
+        res.json({
+            success: true,
+            message: 'Payment processed successfully',
+            data: {
+                paymentId,
+                transactionRef,
+                amount: bookingAmount,
+                platformFee,
+                totalAmount,
+                status: paymentStatus
+            }
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Process payment error:', error);
+        res.status(500).json({ success: false, message: 'Server error processing payment' });
+    } finally {
+        connection.release();
+    }
+});
+
+// @route   GET /api/payments/:id
+// @desc    Get payment details
+// @access  Private
+router.get('/:id', authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const [payment] = await pool.query(`
+            SELECT p.*, 
+                   b.cargo_type, 
+                   b.pickup_city, 
+                   b.pickup_state,
+                   b.delivery_city,
+                   b.delivery_state
+            FROM payments p
+            LEFT JOIN bookings b ON p.booking_id = b.id
+            WHERE p.id = ? AND p.payer_id = ?
+        `, [id, userId]);
+
+        if (payment.length === 0) {
+            return res.status(404).json({ success: false, message: 'Payment not found' });
+        }
+
+        res.json({ success: true, data: payment[0] });
+    } catch (error) {
+        console.error('Fetch payment error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching payment' });
+    }
+});
+
+module.exports = router;

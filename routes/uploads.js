@@ -46,7 +46,9 @@ router.post('/image', authMiddleware, upload.single('image'), async (req, res) =
         const pinataResult = await uploadToIPFS(req.file);
 
         // Construct IPFS URL
-        const gateway = process.env.PINATA_GATEWAY || 'gateway.pinata.cloud';
+        let gateway = process.env.PINATA_GATEWAY || 'gateway.pinata.cloud';
+        // Remove https:// if it exists in the gateway string to prevent double protocol
+        gateway = gateway.replace(/^https?:\/\//, '');
         const imageUrl = `https://${gateway}/ipfs/${pinataResult.IpfsHash}`;
 
         // Clean up local temp file

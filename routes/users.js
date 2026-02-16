@@ -54,7 +54,9 @@ router.post('/upload-avatar', authMiddleware, upload.single('avatar'), async (re
         console.log('Pinata upload complete:', pinataResult);
 
         // Construct IPFS URL
-        const gateway = process.env.PINATA_GATEWAY || 'gateway.pinata.cloud';
+        let gateway = process.env.PINATA_GATEWAY || 'gateway.pinata.cloud';
+        // Remove https:// if it exists in the gateway string to prevent double protocol
+        gateway = gateway.replace(/^https?:\/\//, '');
         const avatarUrl = `https://${gateway}/ipfs/${pinataResult.IpfsHash}`;
         console.log('Generated Avatar URL:', avatarUrl);
 

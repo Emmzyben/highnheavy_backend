@@ -333,7 +333,7 @@ router.put('/:id/accept', authMiddleware, async (req, res) => {
                 SET carrier_id = ?, 
                     assigned_driver_id = ?, 
                     agreed_price = ?, 
-                    status = 'booked' 
+                    status = 'awaiting_payment' 
                 WHERE id = ?
             `, [quote.provider_id, quote.driver_id, quote.amount, quote.booking_id]);
 

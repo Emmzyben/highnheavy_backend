@@ -5,6 +5,13 @@ const { testConnection } = require('./config/database');
 
 // Load environment variables
 dotenv.config();
+console.log('DEBUG: Environment Variables Loaded');
+console.log('DEBUG: JWT_SECRET exists:', !!process.env.JWT_SECRET);
+if (process.env.JWT_SECRET) {
+    console.log('DEBUG: JWT_SECRET length:', process.env.JWT_SECRET.length);
+} else {
+    console.log('DEBUG: JWT_SECRET is missing!');
+}
 
 const app = express();
 
@@ -44,7 +51,9 @@ app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/wallets', require('./routes/wallets'));
 app.use('/api/uploads', require('./routes/uploads'));
+app.use('/api/payments', require('./routes/payments'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
