@@ -4,6 +4,8 @@ const { pool } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const { v4: uuidv4 } = require('uuid');
 const { createNotification } = require('./notifications');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const paypalService = require('../services/paypalService');
 
 // Platform fee percentage (15%)
 const PLATFORM_FEE_PERCENT = 0.15;
@@ -67,6 +69,87 @@ router.get('/history', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('Fetch payment history error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching payment history' });
+    }
+});
+
+// @route   POST /api/payments/create-checkout-session
+// @desc    Create a Stripe Checkout session
+// @access  Private (Shipper only)
+router.post('/create-checkout-session', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { bookingId } = req.body;
+
+        const [booking] = await pool.query(
+            'SELECT * FROM bookings WHERE id = ? AND shipper_id = ?',
+            [bookingId, userId]
+        );
+
+        if (booking.length === 0) {
+            return res.status(404).json({ success: false, message: 'Booking not found' });
+        }
+
+        const b = booking[0];
+        const amount = parseFloat(b.agreed_price);
+        const platformFee = amount * PLATFORM_FEE_PERCENT;
+        const totalAmount = amount + platformFee;
+
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [{
+                price_data: {
+                    currency: 'usd',
+                    product_data: {
+                        name: `Booking #${bookingId.substring(0, 8)}`,
+                        description: `${b.cargo_type} transport`,
+                    },
+                    unit_amount: Math.round(totalAmount * 100),
+                },
+                quantity: 1,
+            }],
+            mode: 'payment',
+            success_url: `${process.env.FRONTEND_URL}/dashboard/shipper?section=payments&payment_success=true`,
+            cancel_url: `${process.env.FRONTEND_URL}/dashboard/shipper?section=payments&payment_canceled=true`,
+            metadata: {
+                bookingId: bookingId,
+                userId: userId.toString()
+            }
+        });
+
+        res.json({ success: true, url: session.url });
+    } catch (error) {
+        console.error('Stripe session error:', error);
+        res.status(500).json({ success: false, message: 'Error creating Stripe session' });
+    }
+});
+
+// @route   POST /api/payments/create-paypal-order
+router.post('/create-paypal-order', authMiddleware, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { bookingId } = req.body;
+
+        const [booking] = await pool.query(
+            'SELECT * FROM bookings WHERE id = ? AND shipper_id = ?',
+            [bookingId, userId]
+        );
+
+        if (booking.length === 0) {
+            return res.status(404).json({ success: false, message: 'Booking not found' });
+        }
+
+        const b = booking[0];
+        const amount = parseFloat(b.agreed_price);
+        const platformFee = amount * PLATFORM_FEE_PERCENT;
+        const totalAmount = amount + platformFee;
+
+        const order = await paypalService.createOrder(bookingId, userId, totalAmount);
+        const approveLink = order.links.find(link => link.rel === 'approve');
+
+        res.json({ success: true, url: approveLink.href });
+    } catch (error) {
+        console.error('PayPal order error:', error);
+        res.status(500).json({ success: false, message: 'Error creating PayPal order' });
     }
 });
 
