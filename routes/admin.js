@@ -105,7 +105,21 @@ router.post('/assign-providers', authMiddleware, async (req, res) => {
 
         await connection.beginTransaction();
 
-        // 1. Get carrier quote details
+        // 1. Check if booking requires an escort
+        const [bookingData] = await connection.query('SELECT requires_escort FROM bookings WHERE id = ?', [booking_id]);
+        if (bookingData.length === 0) throw new Error('Booking not found');
+        
+        const needsEscort = !!bookingData[0].requires_escort;
+
+        if (needsEscort && !escort_quote_id) {
+            await connection.rollback();
+            return res.status(400).json({ 
+                success: false, 
+                message: 'This booking requires an escort. You must select an escort quote before confirming.' 
+            });
+        }
+
+        // 2. Get carrier quote details
         const [cQuote] = await connection.query('SELECT * FROM quotes WHERE id = ?', [carrier_quote_id]);
         if (cQuote.length === 0) throw new Error('Carrier quote not found');
         const carrierQuote = cQuote[0];
@@ -116,29 +130,33 @@ router.post('/assign-providers', authMiddleware, async (req, res) => {
         let escortQuoteAmount = 0;
 
         if (escort_quote_id) {
-            const [eQuote] = await connection.query('SELECT * FROM quotes WHERE id = ?', [escort_quote_id]);
-            if (eQuote.length > 0) {
-                const escortQuote = eQuote[0];
-                escortProviderId = escortQuote.provider_id;
-                escortQuoteAmount = parseFloat(escortQuote.amount);
-                totalAgreedPrice += escortQuoteAmount;
+            const [eQuote] = await connection.query(`
+                SELECT q.*, u.role 
+                FROM quotes q 
+                JOIN users u ON q.provider_id = u.id 
+                WHERE q.id = ?
+            `, [escort_quote_id]);
 
-                // Mark escort quote as accepted
-                await connection.query('UPDATE quotes SET status = "accepted" WHERE id = ?', [escort_quote_id]);
+            if (eQuote.length === 0) {
+                throw new Error('Escort quote not found');
             }
+
+            const escortQuote = eQuote[0];
+            if (escortQuote.role !== 'escort') {
+                throw new Error('The selected escort quote does not belong to an escort provider');
+            }
+
+            escortProviderId = escortQuote.provider_id;
+            escortQuoteAmount = parseFloat(escortQuote.amount);
+            totalAgreedPrice += escortQuoteAmount;
+
+            // Mark escort quote as accepted
+            await connection.query('UPDATE quotes SET status = "accepted" WHERE id = ?', [escort_quote_id]);
         }
 
         // 3. Update booking
-        let updateQuery = 'UPDATE bookings SET carrier_id = ?, assigned_driver_id = ?, agreed_price = ?, status = "awaiting_payment"';
-        let updateParams = [carrierQuote.provider_id, carrierQuote.driver_id, totalAgreedPrice];
-
-        if (escortProviderId) {
-            updateQuery += ', escort_id = ?';
-            updateParams.push(escortProviderId);
-        }
-
-        updateQuery += ' WHERE id = ?';
-        updateParams.push(booking_id);
+        let updateQuery = 'UPDATE bookings SET carrier_id = ?, assigned_driver_id = ?, agreed_price = ?, escort_id = ?, status = "awaiting_payment" WHERE id = ?';
+        let updateParams = [carrierQuote.provider_id, carrierQuote.driver_id, totalAgreedPrice, escortProviderId, booking_id];
 
         await connection.query(updateQuery, updateParams);
 
