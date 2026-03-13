@@ -90,9 +90,21 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
         }
 
         const b = booking[0];
+        
+        if (!b.agreed_price || isNaN(parseFloat(b.agreed_price))) {
+            return res.status(400).json({ success: false, message: 'Booking does not have a valid agreed price' });
+        }
+
         const amount = parseFloat(b.agreed_price);
         const platformFee = amount * PLATFORM_FEE_PERCENT;
         const totalAmount = amount + platformFee;
+        const unitAmount = Math.round(totalAmount * 100);
+
+        if (unitAmount < 50) {
+            return res.status(400).json({ success: false, message: 'Total amount is too small for Stripe (minimum $0.50)' });
+        }
+
+        console.log(`DEBUG: Creating Stripe session for Booking ${bookingId}, Amount: ${unitAmount} cents`);
 
         const session = await stripe.checkout.sessions.create({
             payment_method_types: ['card'],
@@ -103,13 +115,13 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
                         name: `Booking #${bookingId.substring(0, 8)}`,
                         description: `${b.cargo_type} transport`,
                     },
-                    unit_amount: Math.round(totalAmount * 100),
+                    unit_amount: unitAmount,
                 },
                 quantity: 1,
             }],
             mode: 'payment',
-            success_url: `${process.env.FRONTEND_URL}/dashboard/shipper?section=payments&payment_success=true`,
-            cancel_url: `${process.env.FRONTEND_URL}/dashboard/shipper?section=payments&payment_canceled=true`,
+            success_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/dashboard/shipper?section=payments&payment_success=true&provider=stripe`,
+            cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/dashboard/shipper?section=payments&payment_canceled=true`,
             metadata: {
                 bookingId: bookingId,
                 userId: userId.toString()
@@ -118,8 +130,14 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
 
         res.json({ success: true, url: session.url });
     } catch (error) {
-        console.error('Stripe session error:', error);
-        res.status(500).json({ success: false, message: 'Error creating Stripe session' });
+        console.error('Stripe session error:', error.message);
+        if (error.stack) console.error(error.stack);
+        
+        res.status(500).json({ 
+            success: false, 
+            message: 'Error creating Stripe session',
+            error: error.message 
+        });
     }
 });
 
