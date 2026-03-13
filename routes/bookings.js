@@ -203,12 +203,15 @@ router.get('/:id', authMiddleware, async (req, res) => {
                    u.full_name as shipper_name, 
                    p.company_name as shipper_company,
                    u_c.full_name as carrier_name,
-                   u_e.full_name as escort_name
+                   u_e.full_name as escort_name,
+                   d.name as driver_name,
+                   d.phone as driver_phone
             FROM bookings b
             JOIN users u ON b.shipper_id = u.id
             LEFT JOIN profiles p ON b.shipper_id = p.user_id
             LEFT JOIN users u_c ON b.carrier_id = u_c.id
             LEFT JOIN users u_e ON b.escort_id = u_e.id
+            LEFT JOIN drivers d ON b.assigned_driver_id = d.id
             WHERE b.id = ?
         `;
 

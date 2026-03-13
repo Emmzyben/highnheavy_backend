@@ -123,9 +123,10 @@ router.get('/won-jobs', authMiddleware, async (req, res) => {
             `, [providerId]);
         } else {
             [wonJobs] = await pool.query(`
-                SELECT b.*, u.full_name as shipper_name
+                SELECT b.*, u.full_name as shipper_name, d.name as driver_name
                 FROM bookings b
                 JOIN users u ON b.shipper_id = u.id
+                LEFT JOIN drivers d ON b.assigned_driver_id = d.id
                 WHERE b.carrier_id = ?
                 ORDER BY b.updated_at DESC
             `, [providerId]);
