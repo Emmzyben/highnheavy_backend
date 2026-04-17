@@ -130,13 +130,13 @@ const createNotification = async ({ userId, type, title, message, link, metadata
             [id, userId, type, title, message, link, JSON.stringify(metadata || {})]
         );
 
-        // Check if user has email notifications enabled
+        // Always send an email for every platform notification
         const [users] = await pool.query(
-            'SELECT email, email_notifications FROM users WHERE id = ?',
+            'SELECT email FROM users WHERE id = ?',
             [userId]
         );
 
-        if (users.length > 0 && users[0].email_notifications) {
+        if (users.length > 0 && users[0].email) {
             // Send email in background (don't await to avoid slowing down the response)
             sendNotificationEmail(users[0].email, title, message).catch(err => {
                 console.error('Error sending notification email:', err);

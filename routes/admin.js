@@ -3,6 +3,7 @@ const router = express.Router();
 const { pool } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const { createNotification } = require('./notifications');
+const settingsService = require('../services/settingsService');
 
 // @route   GET /api/admin/stats
 // @desc    Get dashboard summary stats
@@ -40,6 +41,8 @@ router.get('/stats', authMiddleware, async (req, res) => {
             LIMIT 3
         `);
 
+        const platformFee = await settingsService.getPlatformFeePercentage();
+
         res.json({
             success: true,
             data: {
@@ -48,7 +51,8 @@ router.get('/stats', authMiddleware, async (req, res) => {
                 escorts: userStats[0].escorts,
                 bookings: bookingStats[0].total,
                 pendingVerifications: pendingVerifications[0].total,
-                latestUnmatched
+                latestUnmatched,
+                platformFee
             }
         });
     } catch (error) {
@@ -97,7 +101,7 @@ router.post('/assign-providers', authMiddleware, async (req, res) => {
             return res.status(403).json({ success: false, message: 'Unauthorized' });
         }
 
-        const { booking_id, carrier_quote_id, escort_quote_id } = req.body;
+        const { booking_id, carrier_quote_id, escort_quote_id, markup_value } = req.body;
 
         if (!booking_id || !carrier_quote_id) {
             return res.status(400).json({ success: false, message: 'Missing booking ID or carrier quote ID' });
@@ -155,8 +159,16 @@ router.post('/assign-providers', authMiddleware, async (req, res) => {
         }
 
         // 3. Update booking
-        let updateQuery = 'UPDATE bookings SET carrier_id = ?, assigned_driver_id = ?, agreed_price = ?, escort_id = ?, status = "awaiting_payment" WHERE id = ?';
-        let updateParams = [carrierQuote.provider_id, carrierQuote.driver_id, totalAgreedPrice, escortProviderId, booking_id];
+        let updateQuery = 'UPDATE bookings SET carrier_id = ?, assigned_driver_id = ?, agreed_price = ?, escort_id = ?, status = "awaiting_payment", markup_type = ?, markup_value = ? WHERE id = ?';
+        let updateParams = [
+            carrierQuote.provider_id, 
+            carrierQuote.driver_id, 
+            totalAgreedPrice, 
+            escortProviderId, 
+            'percentage', 
+            markup_value || null, 
+            booking_id
+        ];
 
         await connection.query(updateQuery, updateParams);
 
@@ -296,6 +308,49 @@ router.get('/users/:userId/vehicles', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('Fetch user vehicles error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// @route   GET /api/admin/settings
+// @desc    Get platform settings
+// @access  Private (Admin only)
+router.get('/settings', authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const [settings] = await pool.query('SELECT * FROM settings');
+        res.json({ success: true, data: settings });
+    } catch (error) {
+        console.error('Fetch settings error:', error);
+        res.status(500).json({ success: false, message: 'Server error fetching settings' });
+    }
+});
+
+// @route   POST /api/admin/settings
+// @desc    Update a platform setting
+// @access  Private (Admin only)
+router.post('/settings', authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Unauthorized' });
+        }
+
+        const { id, value } = req.body;
+        if (!id || value === undefined) {
+            return res.status(400).json({ success: false, message: 'Missing setting ID or value' });
+        }
+
+        const success = await settingsService.updateSetting(id, value);
+        if (success) {
+            res.json({ success: true, message: 'Setting updated successfully' });
+        } else {
+            res.status(500).json({ success: false, message: 'Error updating setting' });
+        }
+    } catch (error) {
+        console.error('Update setting error:', error);
+        res.status(500).json({ success: false, message: 'Server error updating setting' });
     }
 });
 

@@ -105,7 +105,7 @@ const sendExternalEmail = async (toEmail, subject, message) => {
             return false;
         }
     } catch (err) {
-        console.error("Network error occurred while sending email.", err);
+        console.error(`Network error occurred while sending email to ${toEmail} using URL: https://gitaalliedtech.com/highnheavy/highNheavy_email.php`, err);
         return false;
     }
 };
@@ -168,9 +168,39 @@ const sendNotificationEmail = async (toEmail, title, message) => {
     );
 };
 
+// ------------------------------------------------------------
+// SEND OTP EMAIL
+// ------------------------------------------------------------
+
+const sendOTPEmail = async (toEmail, otp) => {
+    const title = "Your Login Verification Code";
+    const content = `You are attempting to log in to your High-N-Heavy account.
+    
+    Please use the following verification code to complete your login. This code will expire in 5 minutes.`;
+    
+    // Custom formatted content for OTP
+    const otpContent = `
+        <div style="text-align: center; margin: 30px 0;">
+            <div style="font-size: 32px; font-weight: 800; color: #1e2b3e; letter-spacing: 5px; padding: 15px; background: #f8fafc; border: 2px dashed #44AEBC; border-radius: 12px; display: inline-block;">
+                ${otp}
+            </div>
+        </div>
+        ${content}
+    `;
+
+    const html = getHtmlTemplate(title, otpContent, "", "");
+
+    return await sendExternalEmail(
+        toEmail,
+        "Login Verification Code - High-N-Heavy",
+        html
+    );
+};
+
 module.exports = {
     generateVerificationToken,
     sendVerificationEmail,
     sendPasswordResetEmail,
-    sendNotificationEmail
+    sendNotificationEmail,
+    sendOTPEmail
 };

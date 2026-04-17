@@ -25,6 +25,7 @@ router.post('/', authMiddleware, async (req, res) => {
             width,
             height,
             weight,
+            weightUnit,
             shipmentDate,
             flexibleDates,
             requiresEscort,
@@ -58,12 +59,13 @@ router.post('/', authMiddleware, async (req, res) => {
                 dimensions_width_ft,
                 dimensions_height_ft,
                 weight_lbs,
+                weight_unit,
                 shipment_date,
                 flexible_dates,
                 requires_escort,
                 special_instructions,
                 status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const params = [
@@ -81,6 +83,7 @@ router.post('/', authMiddleware, async (req, res) => {
             parseFloat(width),
             parseFloat(height),
             parseFloat(weight),
+            weightUnit || 'lbs',
             shipmentDate,
             flexibleDates ? 1 : 0,
             requiresEscort ? 1 : 0,
@@ -315,6 +318,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
             width,
             height,
             weight,
+            weightUnit,
             shipmentDate,
             flexibleDates,
             requiresEscort,
@@ -338,7 +342,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
                 pickup_address=?, pickup_city=?, pickup_state=?,
                 delivery_address=?, delivery_city=?, delivery_state=?,
                 cargo_type=?, cargo_description=?,
-                dimensions_length_ft=?, dimensions_width_ft=?, dimensions_height_ft=?, weight_lbs=?,
+                dimensions_length_ft=?, dimensions_width_ft=?, dimensions_height_ft=?, weight_lbs=?, weight_unit=?,
                 shipment_date=?, flexible_dates=?, requires_escort=?, special_instructions=?
             WHERE id = ?
         `;
@@ -347,7 +351,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
             pickupAddress, pickupCity, pickupState,
             deliveryAddress, deliveryCity, deliveryState,
             cargoType, cargoDescription,
-            parseFloat(length), parseFloat(width), parseFloat(height), parseFloat(weight),
+            parseFloat(length), parseFloat(width), parseFloat(height), parseFloat(weight), weightUnit || 'lbs',
             shipmentDate, flexibleDates ? 1 : 0, requiresEscort ? 1 : 0, specialInstructions || null,
             id
         ];

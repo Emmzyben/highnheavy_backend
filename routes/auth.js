@@ -7,7 +7,8 @@ const { pool } = require('../config/database');
 const {
     generateVerificationToken,
     sendVerificationEmail,
-    sendPasswordResetEmail
+    sendPasswordResetEmail,
+    sendOTPEmail
 } = require('../services/email');
 
 // @route   POST /api/auth/register
@@ -53,7 +54,12 @@ router.post('/register', async (req, res) => {
         );
 
         // Send verification email
-        await sendVerificationEmail(email, verificationToken);
+        const verificationSent = await sendVerificationEmail(email, verificationToken);
+        if (!verificationSent && process.env.NODE_ENV === 'development') {
+            console.log('--- DEV MODE: EMAIL FAILED ---');
+            console.log(`To: ${email}\nVerification Link: ${process.env.FRONTEND_URL || "http://localhost:8080"}/verify-email?token=${verificationToken}`);
+            console.log('------------------------------');
+        }
 
         // Get the newly created user
         const [newUser] = await pool.query(
@@ -135,17 +141,43 @@ router.post('/login', async (req, res) => {
         }
 
         const profile_completed = user.profile_completed === 1;
+        
+        // Handle 2FA for Carrier and Escort
+        if (user.role === 'carrier' || user.role === 'escort') {
+            const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+            const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
 
-        // Create JWT token
-        console.log('DEBUG: CWD:', process.cwd());
-        console.log('DEBUG: JWT_SECRET in auth route:', process.env.JWT_SECRET);
+            await pool.query(
+                'UPDATE users SET otp_code = ?, otp_expiry = ? WHERE id = ?',
+                [otpCode, otpExpiry, user.id]
+            );
 
-        if (!process.env.JWT_SECRET) {
-            console.error('CRITICAL: JWT_SECRET is missing!');
-            // Fallback for debugging - DO NOT LEAVE IN PRODUCTION
-            // process.env.JWT_SECRET = 'mysecretbeautifuluglykey';
+            const otpSent = await sendOTPEmail(user.email, otpCode);
+            
+            if (!otpSent) {
+                console.error(`ERROR: Failed to send OTP email to ${user.email}`);
+                if (process.env.NODE_ENV === 'development') {
+                    console.log('--- DEV MODE: OTP LOG ---');
+                    console.log(`TO: ${user.email}`);
+                    console.log(`CODE: ${otpCode}`);
+                    console.log('-------------------------');
+                } else {
+                    return res.status(503).json({
+                        success: false,
+                        message: 'Email service is temporarily unavailable. Please try again later.'
+                    });
+                }
+            }
+
+            return res.json({
+                success: true,
+                requiresOTP: true,
+                userId: user.id,
+                message: 'OTP sent to your email'
+            });
         }
 
+        // Create JWT token for other roles or if 2FA is not required
         const token = jwt.sign(
             { id: user.id, email: user.email, role: user.role },
             process.env.JWT_SECRET,
@@ -212,6 +244,64 @@ router.post('/verify-email', async (req, res) => {
     }
 });
 
+// @route   POST /api/auth/verify-otp
+// @desc    Verify OTP for 2FA
+// @access  Public
+router.post('/verify-otp', async (req, res) => {
+    try {
+        const { userId, otp } = req.body;
+
+        if (!userId || !otp) {
+            return res.status(400).json({ success: false, message: 'Missing userId or OTP' });
+        }
+
+        const [users] = await pool.query(
+            'SELECT * FROM users WHERE id = ? AND otp_code = ? AND otp_expiry > NOW()',
+            [userId, otp]
+        );
+
+        if (users.length === 0) {
+            return res.status(401).json({ success: false, message: 'Invalid or expired OTP' });
+        }
+
+        const user = users[0];
+
+        // Clear OTP
+        await pool.query(
+            'UPDATE users SET otp_code = NULL, otp_expiry = NULL WHERE id = ?',
+            [userId]
+        );
+
+        // Generate JWT token
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role },
+            process.env.JWT_SECRET,
+            { expiresIn: process.env.JWT_EXPIRE || '30d' }
+        );
+
+        res.json({
+            success: true,
+            message: 'Login successful',
+            data: {
+                token,
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    full_name: user.full_name,
+                    role: user.role,
+                    status: user.status,
+                    profile_completed: user.profile_completed === 1,
+                    email_verified: user.email_verified === 1,
+                    avatar_url: user.avatar_url
+                }
+            }
+        });
+    } catch (error) {
+        console.error('OTP verification error:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
 // @route   POST /api/auth/forgot-password
 // @desc    Request password reset
 // @access  Public
@@ -237,7 +327,12 @@ router.post('/forgot-password', async (req, res) => {
             [resetToken, expiry, users[0].id]
         );
 
-        await sendPasswordResetEmail(email, resetToken);
+        const resetSent = await sendPasswordResetEmail(email, resetToken);
+        if (!resetSent && process.env.NODE_ENV === 'development') {
+            console.log('--- DEV MODE: RESET LINK ---');
+            console.log(`TO: ${email}\nLINK: ${process.env.FRONTEND_URL || "http://localhost:8080"}/reset-password?token=${resetToken}`);
+            console.log('----------------------------');
+        }
 
         res.json({ success: true, message: 'If account exists, reset email sent' });
     } catch (error) {

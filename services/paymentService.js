@@ -1,6 +1,7 @@
 const { pool } = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
 const { createNotification } = require('../routes/notifications');
+const settingsService = require('./settingsService');
 
 /**
  * Finalize a payment in the database
@@ -62,7 +63,7 @@ const finalizePayment = async (bookingId, userId, transactionRef, method = 'stri
         });
 
         const bookingAmount = parseFloat(b.agreed_price);
-        const platformFee = bookingAmount * 0.15;
+        const platformFee = await calculatePlatformFee(bookingAmount, b);
         const totalAmount = bookingAmount + platformFee;
 
         // 3. Create payment record
@@ -153,4 +154,22 @@ const finalizePayment = async (bookingId, userId, transactionRef, method = 'stri
     }
 };
 
-module.exports = { finalizePayment };
+/**
+ * Calculate platform fee based on booking markup percentage or global default
+ * @param {number} bookingAmount 
+ * @param {object} booking 
+ * @returns {Promise<number>}
+ */
+const calculatePlatformFee = async (bookingAmount, booking) => {
+    // If markup_value is null, fall back to global percentage
+    if (booking.markup_value === null || booking.markup_value === undefined) {
+        const globalPercentage = await settingsService.getPlatformFeePercentage();
+        return bookingAmount * globalPercentage;
+    }
+
+    // Default to percentage
+    const percentage = parseFloat(booking.markup_value) / 100;
+    return bookingAmount * percentage;
+};
+
+module.exports = { finalizePayment, calculatePlatformFee };

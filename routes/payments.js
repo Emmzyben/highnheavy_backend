@@ -6,9 +6,8 @@ const { v4: uuidv4 } = require('uuid');
 const { createNotification } = require('./notifications');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const paypalService = require('../services/paypalService');
-
-// Platform fee percentage (15%)
-const PLATFORM_FEE_PERCENT = 0.15;
+const { finalizePayment, calculatePlatformFee } = require('../services/paymentService');
+const settingsService = require('../services/settingsService');
 
 // @route   GET /api/payments/awaiting
 // @desc    Get bookings awaiting payment for shipper
@@ -37,7 +36,13 @@ router.get('/awaiting', authMiddleware, async (req, res) => {
             ORDER BY b.created_at DESC
         `, [userId]);
 
-        res.json({ success: true, data: bookings });
+        const platformFeePercentage = await settingsService.getPlatformFeePercentage();
+
+        res.json({ 
+            success: true, 
+            data: bookings,
+            platformFeePercentage
+        });
     } catch (error) {
         console.error('Fetch awaiting payments error:', error);
         res.status(500).json({ success: false, message: 'Server error fetching payments' });
@@ -90,13 +95,13 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
         }
 
         const b = booking[0];
-        
+
         if (!b.agreed_price || isNaN(parseFloat(b.agreed_price))) {
             return res.status(400).json({ success: false, message: 'Booking does not have a valid agreed price' });
         }
 
         const amount = parseFloat(b.agreed_price);
-        const platformFee = amount * PLATFORM_FEE_PERCENT;
+        const platformFee = await calculatePlatformFee(amount, b);
         const totalAmount = amount + platformFee;
         const unitAmount = Math.round(totalAmount * 100);
 
@@ -132,11 +137,11 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('Stripe session error:', error.message);
         if (error.stack) console.error(error.stack);
-        
-        res.status(500).json({ 
-            success: false, 
+
+        res.status(500).json({
+            success: false,
             message: 'Error creating Stripe session',
-            error: error.message 
+            error: error.message
         });
     }
 });
@@ -158,7 +163,7 @@ router.post('/create-paypal-order', authMiddleware, async (req, res) => {
 
         const b = booking[0];
         const amount = parseFloat(b.agreed_price);
-        const platformFee = amount * PLATFORM_FEE_PERCENT;
+        const platformFee = await calculatePlatformFee(amount, b);
         const totalAmount = amount + platformFee;
 
         const order = await paypalService.createOrder(bookingId, userId, totalAmount);
@@ -168,6 +173,51 @@ router.post('/create-paypal-order', authMiddleware, async (req, res) => {
     } catch (error) {
         console.error('PayPal order error:', error);
         res.status(500).json({ success: false, message: 'Error creating PayPal order' });
+    }
+});
+
+// @route   POST /api/payments/capture-paypal
+router.post('/capture-paypal', authMiddleware, async (req, res) => {
+    try {
+        const { token, bookingId } = req.body;
+        const userId = req.user.id;
+
+        if (!token) return res.status(400).json({ success: false, message: 'Token is required' });
+        if (!bookingId) return res.status(400).json({ success: false, message: 'Booking ID is required' });
+
+        const order = await paypalService.getOrder(token);
+
+        let orderBookingId, orderUserId;
+        try {
+            const customIdStr = order.purchase_units[0].custom_id;
+            const parsed = JSON.parse(customIdStr);
+            orderBookingId = parsed.bookingId;
+            orderUserId = parsed.userId;
+        } catch (e) {
+            return res.status(400).json({ success: false, message: 'Invalid custom_id in order' });
+        }
+
+        if (orderBookingId !== bookingId || orderUserId !== userId) {
+            return res.status(400).json({ success: false, message: 'Invalid booking or user for this payment' });
+        }
+
+        if (order.status === 'COMPLETED') {
+            await finalizePayment(bookingId, userId, token, 'paypal');
+            return res.json({ success: true, message: 'Payment verified successfully' });
+        } else if (order.status === 'APPROVED') {
+            const capture = await paypalService.captureOrder(token);
+            if (capture.status === 'COMPLETED') {
+                await finalizePayment(bookingId, userId, token, 'paypal');
+                return res.json({ success: true, message: 'Payment captured successfully' });
+            } else {
+                return res.status(400).json({ success: false, message: 'Payment could not be captured' });
+            }
+        } else {
+            return res.status(400).json({ success: false, message: 'Order is not approved' });
+        }
+    } catch (error) {
+        console.error('Capture PayPal error:', error);
+        res.status(500).json({ success: false, message: 'Error capturing PayPal payment' });
     }
 });
 
@@ -234,7 +284,8 @@ router.post('/process', authMiddleware, async (req, res) => {
 
         // 3. Calculate payment amounts
         const bookingAmount = parseFloat(b.agreed_price);
-        const platformFee = bookingAmount * PLATFORM_FEE_PERCENT;
+        const platformFeePercentage = await settingsService.getPlatformFeePercentage();
+        const platformFee = bookingAmount * platformFeePercentage;
         const totalAmount = bookingAmount + platformFee;
 
         // 4. Process payment based on method
@@ -306,15 +357,9 @@ router.post('/process', authMiddleware, async (req, res) => {
                 `, [escortId, escortAmount, bookingId, `Pending payment for escort service on booking ${bookingId}`]);
             }
 
-            // Update Admin Wallet / Activity? (Admin tracks platform earnings)
-            // Get Admin User
             const [adminUser] = await connection.query('SELECT id FROM users WHERE role = "admin" LIMIT 1');
             if (adminUser.length > 0) {
                 const adminId = adminUser[0].id;
-                // Admin gets platform fee as balance immediately? 
-                // Typically platform fee is earned when service is delivered.
-                // But user says: "admin... has his own balance which is the total of all wallet balance and the system 15%"
-                // Let's add it to admin's balance or track separately.
                 await connection.query(
                     'UPDATE wallets SET balance = balance + ? WHERE user_id = ?',
                     [platformFee, adminId]

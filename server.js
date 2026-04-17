@@ -63,6 +63,7 @@ app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/wallets', require('./routes/wallets'));
 app.use('/api/uploads', require('./routes/uploads'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/cargo-types', require('./routes/cargoTypes'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

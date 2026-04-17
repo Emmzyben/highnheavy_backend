@@ -97,6 +97,28 @@ const captureOrder = async (orderId) => {
 };
 
 /**
+ * Get a PayPal Order
+ */
+const getOrder = async (orderId) => {
+    try {
+        const accessToken = await getAccessToken();
+        const response = await axios.get(
+            `${BASE_URL}/v2/checkout/orders/${orderId}`,
+            {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        return response.data;
+    } catch (error) {
+        console.error('PayPal Get Order Error:', error.response?.data || error.message);
+        throw new Error('Could not get PayPal order');
+    }
+};
+
+/**
  * Verify PayPal Webhook Signature
  */
 const verifyWebhookSignature = async (headers, body, webhookId) => {
@@ -130,5 +152,6 @@ const verifyWebhookSignature = async (headers, body, webhookId) => {
 module.exports = {
     createOrder,
     captureOrder,
+    getOrder,
     verifyWebhookSignature
 };
