@@ -11,13 +11,22 @@ router.get('/me', authMiddleware, async (req, res) => {
     try {
         const userId = req.user.id;
 
-        const [wallet] = await pool.query(
+        let [wallet] = await pool.query(
             'SELECT balance, pending_balance, currency FROM wallets WHERE user_id = ?',
             [userId]
         );
 
         if (wallet.length === 0) {
-            return res.status(404).json({ success: false, message: 'Wallet not found' });
+            // Create a wallet if it doesn't exist
+            await pool.query(
+                'INSERT INTO wallets (user_id, balance, pending_balance, currency) VALUES (?, 0.00, 0.00, "USD")',
+                [userId]
+            );
+            // Fetch it again
+            [wallet] = await pool.query(
+                'SELECT balance, pending_balance, currency FROM wallets WHERE user_id = ?',
+                [userId]
+            );
         }
 
         const [transactions] = await pool.query(`

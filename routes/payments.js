@@ -125,7 +125,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
                 quantity: 1,
             }],
             mode: 'payment',
-            success_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/dashboard/shipper?section=payments&payment_success=true&provider=stripe`,
+            success_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/dashboard/shipper?section=payments&payment_success=true&provider=stripe&session_id={CHECKOUT_SESSION_ID}&booking_id=${bookingId}`,
             cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:8080'}/dashboard/shipper?section=payments&payment_canceled=true`,
             metadata: {
                 bookingId: bookingId,
@@ -136,13 +136,55 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
         res.json({ success: true, url: session.url });
     } catch (error) {
         console.error('Stripe session error:', error.message);
-        if (error.stack) console.error(error.stack);
+        res.status(500).json({ success: false, message: 'Error creating Stripe session' });
+    }
+});
 
-        res.status(500).json({
-            success: false,
-            message: 'Error creating Stripe session',
-            error: error.message
+// @route   POST /api/payments/verify-stripe
+// @desc    Verify Stripe payment session immediately (No Webhook)
+// @access  Private (Shipper only)
+router.post('/verify-stripe', authMiddleware, async (req, res) => {
+    try {
+        const { sessionId, bookingId } = req.body;
+        const userId = req.user.id;
+
+        if (!sessionId || !bookingId) {
+            return res.status(400).json({ success: false, message: 'Session ID and Booking ID are required' });
+        }
+
+        console.log(`SECURE VERIFY: Checking Stripe Session ${sessionId} for Booking ${bookingId}`);
+
+        // 1. Retrieve the session directly from Stripe (SECURE)
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+        // 2. Validate session status
+        if (session.payment_status !== 'paid') {
+            return res.status(400).json({ success: false, message: 'Payment has not been completed yet.' });
+        }
+
+        // 3. Validate metadata to prevent tampering
+        if (session.metadata.bookingId !== bookingId || session.metadata.userId !== userId.toString()) {
+            console.error('SECURE VERIFY FAILURE: Metadata mismatch', {
+                sessionBooking: session.metadata.bookingId,
+                providedBooking: bookingId,
+                sessionUser: session.metadata.userId,
+                providedUser: userId
+            });
+            return res.status(403).json({ success: false, message: 'Security verification failed. Metadata mismatch.' });
+        }
+
+        // 4. Finalize the payment using the existing service
+        const result = await finalizePayment(bookingId, userId, sessionId, 'stripe');
+
+        res.json({ 
+            success: true, 
+            message: 'Payment verified and finalized successfully',
+            data: result
         });
+
+    } catch (error) {
+        console.error('Stripe verification error:', error.message);
+        res.status(500).json({ success: false, message: 'Error verifying Stripe payment', error: error.message });
     }
 });
 
@@ -205,19 +247,26 @@ router.post('/capture-paypal', authMiddleware, async (req, res) => {
             await finalizePayment(bookingId, userId, token, 'paypal');
             return res.json({ success: true, message: 'Payment verified successfully' });
         } else if (order.status === 'APPROVED') {
-            const capture = await paypalService.captureOrder(token);
-            if (capture.status === 'COMPLETED') {
-                await finalizePayment(bookingId, userId, token, 'paypal');
-                return res.json({ success: true, message: 'Payment captured successfully' });
-            } else {
-                return res.status(400).json({ success: false, message: 'Payment could not be captured' });
+            try {
+                const capture = await paypalService.captureOrder(token);
+                if (capture.status === 'COMPLETED') {
+                    await finalizePayment(bookingId, userId, token, 'paypal');
+                    return res.json({ success: true, message: 'Payment captured and finalized' });
+                }
+            } catch (error) {
+                // Handle case where webhook already captured it
+                if (error.message.includes('ORDER_ALREADY_CAPTURED') || error.message.includes('422')) {
+                    await finalizePayment(bookingId, userId, token, 'paypal');
+                    return res.json({ success: true, message: 'Payment already captured and verified' });
+                }
+                throw error;
             }
-        } else {
-            return res.status(400).json({ success: false, message: 'Order is not approved' });
         }
+
+        res.status(400).json({ success: false, message: `Payment is in ${order.status} status` });
     } catch (error) {
-        console.error('Capture PayPal error:', error);
-        res.status(500).json({ success: false, message: 'Error capturing PayPal payment' });
+        console.error('PayPal capture error:', error.message);
+        res.status(500).json({ success: false, message: 'Error capturing PayPal payment', error: error.message });
     }
 });
 

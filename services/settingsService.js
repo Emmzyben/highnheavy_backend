@@ -27,7 +27,10 @@ async function getSetting(id, defaultValue = null) {
  */
 async function updateSetting(id, value) {
     try {
-        await pool.query('UPDATE settings SET value = ? WHERE id = ?', [value, id]);
+        await pool.query(
+            'INSERT INTO settings (id, value, updated_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE value = ?, updated_at = NOW()',
+            [id, value, value]
+        );
         return true;
     } catch (error) {
         console.error(`Error updating setting ${id}:`, error);

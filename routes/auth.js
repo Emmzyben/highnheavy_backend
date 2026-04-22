@@ -53,6 +53,15 @@ router.post('/register', async (req, res) => {
             [email, phone_number, password_hash, full_name, role, verificationToken, false]
         );
 
+        // Get the newly created user ID
+        const userId = result.insertId || (await pool.query('SELECT id FROM users WHERE email = ?', [email]))[0][0].id;
+
+        // Create wallet for the new user
+        await pool.query(
+            'INSERT IGNORE INTO wallets (user_id, balance, pending_balance, currency) VALUES (?, 0.00, 0.00, "USD")',
+            [userId]
+        );
+
         // Send verification email
         const verificationSent = await sendVerificationEmail(email, verificationToken);
         if (!verificationSent && process.env.NODE_ENV === 'development') {

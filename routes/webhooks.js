@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { finalizePayment } = require('../services/paymentService');
+
 // @route   POST /api/webhooks/webhook
 // @desc    Stripe Webhook for payment events
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
@@ -28,7 +29,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         const userId = session.metadata.userId;
         const sessionId = session.id;
 
-        console.log(`🔔 Stripe Payment successful for Booking: ${bookingId}`);
+        console.log(`🔔 Stripe Webhook Fallback: Finalizing Booking ${bookingId}`);
 
         try {
             await finalizePayment(bookingId, userId, sessionId, 'stripe');

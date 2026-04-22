@@ -95,6 +95,12 @@ const finalizePayment = async (bookingId, userId, transactionRef, method = 'stri
 
         // 5. Update Wallets (Pending Balance)
         if (carrierId && carrierAmount > 0) {
+            // Ensure wallet exists (Safe fallback)
+            await connection.query(
+                'INSERT IGNORE INTO wallets (user_id, balance, pending_balance, currency) VALUES (?, 0.00, 0.00, "USD")',
+                [carrierId]
+            );
+
             await connection.query(
                 'UPDATE wallets SET pending_balance = pending_balance + ? WHERE user_id = ?',
                 [carrierAmount, carrierId]
@@ -106,6 +112,12 @@ const finalizePayment = async (bookingId, userId, transactionRef, method = 'stri
         }
 
         if (escortId && escortAmount > 0) {
+            // Ensure wallet exists (Safe fallback)
+            await connection.query(
+                'INSERT IGNORE INTO wallets (user_id, balance, pending_balance, currency) VALUES (?, 0.00, 0.00, "USD")',
+                [escortId]
+            );
+
             await connection.query(
                 'UPDATE wallets SET pending_balance = pending_balance + ? WHERE user_id = ?',
                 [escortAmount, escortId]
@@ -120,6 +132,13 @@ const finalizePayment = async (bookingId, userId, transactionRef, method = 'stri
         const [adminUser] = await connection.query('SELECT id FROM users WHERE role = "admin" LIMIT 1');
         if (adminUser.length > 0) {
             const adminId = adminUser[0].id;
+            
+            // Ensure wallet exists (Safe fallback)
+            await connection.query(
+                'INSERT IGNORE INTO wallets (user_id, balance, pending_balance, currency) VALUES (?, 0.00, 0.00, "USD")',
+                [adminId]
+            );
+
             await connection.query(
                 'UPDATE wallets SET balance = balance + ? WHERE user_id = ?',
                 [platformFee, adminId]

@@ -137,22 +137,24 @@ router.get('/my-bookings', authMiddleware, async (req, res) => {
                 SELECT b.*, 
                        cu.full_name as carrier_name, 
                        cp.company_name as carrier_company,
-                       eu.full_name as escort_name, 
-                       ep.company_name as escort_company,
                        d.name as driver_name,
-                       r.id as review_id,
-                       r.rating as review_rating,
-                       r.comment as review_comment
+                       r_c.id as carrier_review_id,
+                       r_c.rating as carrier_review_rating,
+                       r_c.comment as carrier_review_comment,
+                       r_e.id as escort_review_id,
+                       r_e.rating as escort_review_rating,
+                       r_e.comment as escort_review_comment
                 FROM bookings b
                 LEFT JOIN users cu ON b.carrier_id = cu.id
                 LEFT JOIN profiles cp ON b.carrier_id = cp.user_id
                 LEFT JOIN users eu ON b.escort_id = eu.id
                 LEFT JOIN profiles ep ON b.escort_id = ep.user_id
                 LEFT JOIN drivers d ON b.assigned_driver_id = d.id
-                LEFT JOIN reviews r ON b.id = r.booking_id AND r.reviewer_id = ?
+                LEFT JOIN reviews r_c ON b.id = r_c.booking_id AND r_c.reviewer_id = ? AND r_c.subject_id = b.carrier_id
+                LEFT JOIN reviews r_e ON b.id = r_e.booking_id AND r_e.reviewer_id = ? AND r_e.subject_id = b.escort_id
                 WHERE b.shipper_id = ?
             `;
-            params.push(userId, userId);
+            params.push(userId, userId, userId);
         } else if (userRole === 'carrier') {
             query += 'carrier_id = ?';
             params.push(userId);

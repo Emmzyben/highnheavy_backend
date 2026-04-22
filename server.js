@@ -24,7 +24,8 @@ app.use(cors({
 }));
 
 // Webhook routes (must come before express.json())
-app.use('/api/webhooks', require('./routes/webhooks'));
+app.use('/api/webhooks/stripe', require('./routes/webhooks'));
+app.use('/api/webhooks/paypal', require('./routes/paypalWebhooks'));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));

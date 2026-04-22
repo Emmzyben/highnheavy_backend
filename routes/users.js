@@ -4,6 +4,7 @@ const { pool } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 
 // Configure multer for avatar uploads
 const storage = multer.diskStorage({
@@ -33,14 +34,11 @@ const upload = multer({
 });
 
 const { uploadToIPFS } = require('../services/pinataService');
-const fs = require('fs');
 
 // ... imports remain the same ...
 
-// @route   POST /api/users/upload-avatar
-// @desc    Upload user avatar
-// @access  Private
-router.post('/upload-avatar', authMiddleware, upload.single('avatar'), async (req, res) => {
+// @route   POST /api/users/avatar (Alternative for /api/users/upload-avatar)
+router.post(['/avatar', '/upload-avatar'], authMiddleware, upload.single('avatar'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ success: false, message: 'Please upload a file' });

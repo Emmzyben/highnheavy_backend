@@ -32,13 +32,13 @@ router.post('/', authMiddleware, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Booking must be completed before reviewing' });
         }
 
-        // Check if already reviewed
+        // Check if already reviewed this specific subject for this booking
         const [existing] = await pool.query(
-            'SELECT id FROM reviews WHERE booking_id = ? AND reviewer_id = ?',
-            [bookingId, reviewerId]
+            'SELECT id FROM reviews WHERE booking_id = ? AND reviewer_id = ? AND subject_id = ?',
+            [bookingId, reviewerId, subjectId]
         );
         if (existing.length > 0) {
-            return res.status(400).json({ success: false, message: 'You have already reviewed this booking' });
+            return res.status(400).json({ success: false, message: 'You have already reviewed this provider for this booking' });
         }
 
         const id = uuidv4();
