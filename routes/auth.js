@@ -154,7 +154,7 @@ router.post('/login', async (req, res) => {
         // Handle 2FA for Carrier and Escort
         if (user.role === 'carrier' || user.role === 'escort') {
             const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-            const otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+            const otpExpiry = new Date(Date.now() + 15 * 60 * 1000); // Extended to 15 minutes to be safe
 
             await pool.query(
                 'UPDATE users SET otp_code = ?, otp_expiry = ? WHERE id = ?',
@@ -265,15 +265,35 @@ router.post('/verify-otp', async (req, res) => {
         }
 
         const [users] = await pool.query(
-            'SELECT * FROM users WHERE id = ? AND otp_code = ? AND otp_expiry > NOW()',
-            [userId, otp]
+            'SELECT * FROM users WHERE id = ?',
+            [userId]
         );
-
+        
         if (users.length === 0) {
-            return res.status(401).json({ success: false, message: 'Invalid or expired OTP' });
+            console.log(`DEBUG: OTP Verify - User not found: ${userId}`);
+            return res.status(404).json({ success: false, message: 'User not found' });
         }
-
+        
         const user = users[0];
+        const now = new Date();
+        const expiry = user.otp_expiry ? new Date(user.otp_expiry) : null;
+        
+        const inputOtp = String(otp).trim();
+        const storedOtp = user.otp_code ? String(user.otp_code).trim() : null;
+        
+        console.log(`DEBUG: OTP Verification Attempt - Email: ${user.email}, Input: "${inputOtp}", Stored: "${storedOtp}", Now: ${now.toISOString()}, Expiry: ${expiry?.toISOString()}`);
+
+        // Check if OTP matches
+        if (!storedOtp || storedOtp !== inputOtp) {
+            console.log(`DEBUG: OTP Verify FAILED (Mismatch) - User: ${user.email}`);
+            return res.status(401).json({ success: false, message: 'Invalid verification code' });
+        }
+        
+        // Check if OTP is expired
+        if (!expiry || expiry < now) {
+            console.log(`DEBUG: OTP Verify FAILED (Expired) - User: ${user.email}`);
+            return res.status(401).json({ success: false, message: 'Verification code has expired. Please log in again.' });
+        }
 
         // Clear OTP
         await pool.query(
@@ -299,8 +319,8 @@ router.post('/verify-otp', async (req, res) => {
                     full_name: user.full_name,
                     role: user.role,
                     status: user.status,
-                    profile_completed: user.profile_completed === 1,
-                    email_verified: user.email_verified === 1,
+                    profile_completed: user.profile_completed === 1 || user.profile_completed === true,
+                    email_verified: user.email_verified === 1 || user.email_verified === true,
                     avatar_url: user.avatar_url
                 }
             }
